@@ -42,7 +42,7 @@ npm install
 ```
 
 ## Deploy
-1. Deploy the project using the following command in the root of the aws-cdk-grafana folder (replacing the domainName, hostedZoneId and zoneName with the correct values for you environment)
+1. Deploy the project using the following command in the root of the aws-cdk-grafana folder (replacing the domainName, hostedZoneId and zoneName with the correct values for your environment)
 ``` bash
 cdk deploy --context domainName="grafana.example.com" --context hostedZoneId="Z0123456789ABCDEFGHIJ" --context zoneName="example.com"
 ```
