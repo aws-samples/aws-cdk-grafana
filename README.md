@@ -1,6 +1,6 @@
 # CDK Grafana
 ## Summary
-This project aims to deploy a resilient Grafana container on [AWS Fargate](https://aws.amazon.com/fargate/) using the [Grafana Docker Image](https://grafana.com/docs/grafana/latest/installation/docker/) on [DockerHub](https://hub.docker.com/r/grafana/grafana/) with no modifications/rebuilds of the container, and minimal post deploy configuration of Grafana.
+This project aims to deploy a resilient Grafana container on [AWS Fargate](https://aws.amazon.com/fargate/) using the [Grafana Docker Image](https://grafana.com/docs/grafana/latest/installation/docker/) on [DockerHub](https://hub.docker.com/r/grafana/grafana/) with no modifications/rebuilds of the container and minimal post deploy configuration of Grafana.
 
 * The [AWS CDK](https://aws.amazon.com/cdk/) is used for infrastructure-as-code and deployment.  
 * Persistance is provided by [Amazon EFS and AWS Fargate support](https://aws.amazon.com/about-aws/whats-new/2020/04/amazon-ecs-aws-fargate-support-amazon-efs-filesystems-generally-available/).  
@@ -8,6 +8,7 @@ This project aims to deploy a resilient Grafana container on [AWS Fargate](https
 * Access for the Grafana container to CloudWatch is configured with an IAM Role, preventing the need to configure Access/Secret keys
 * The initial admin password is securely generated and configured using [Secrets Manager](https://console.aws.amazon.com/secretsmanager)
 * A TLS certificate is automatically created deployed to the Application Load Balancer using [AWS Certificate Manager](https://aws.amazon.com/certificate-manager/) enabling secure HTTPS Only communication with the Grafana portal
+* *Optional* PrivateLink endpoints can be added for increased security
 
 ## System Diagram
 ![System Diagram](img/diagram01.png "System Diagram")
@@ -55,7 +56,7 @@ You can test Grafana config persists past a reboot by simply terminating the tas
 
 `Note` changes to the Admin password in Secrets Manager will not be reflected in Grafana as this is set only once at initial deploy time.
 
-## PrivateLink Enpoints (Optional)
+## PrivateLink Endpoints (Optional)
 PrivateLink endpoints can be added using the following command.  This will incur [additional cost](https://aws.amazon.com/privatelink/pricing/) for the endpoints, but will prevent CloudWatch, EFS (Elastic File System) and Secrets Manager traffic from traversing the public internet.
 ``` bash
 cdk deploy --context domainName="grafana.example.com" --context hostedZoneId="Z0123456789ABCDEFGHIJ" --context zoneName="example.com" --context enablePrivateLink=="true"
