@@ -163,7 +163,7 @@ export class CdkGrafanaStack extends cdk.Stack {
 
     // Create a load-balanced Fargate service and make it public
     const fargateService = new ecs_patterns.ApplicationLoadBalancedFargateService(this, "MyFargateService", {
-      domainName: domainZone.zoneName,
+      domainName: domainName,
       domainZone: domainZone,
       cluster: cluster, // Required
       cpu: 1024, // https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html
