@@ -1,29 +1,32 @@
-const cdk = require('@aws-cdk/core');
-const ec2 = require("@aws-cdk/aws-ec2");
-const ecs = require("@aws-cdk/aws-ecs");
-const ecs_patterns = require("@aws-cdk/aws-ecs-patterns");
-const efs = require('@aws-cdk/aws-efs');
-const iam = require('@aws-cdk/aws-iam');
-const logs = require('@aws-cdk/aws-logs');
-const secretsmanager = require('@aws-cdk/aws-secretsmanager');
-const { CfnOutput } = require('@aws-cdk/core');
+import * as cdk from '@aws-cdk/core';
+import * as ec2 from '@aws-cdk/aws-ec2';
+import * as ecs from '@aws-cdk/aws-ecs';
+import * as ecs_patterns from '@aws-cdk/aws-ecs-patterns';
+import * as efs from '@aws-cdk/aws-efs';
+import * as iam from '@aws-cdk/aws-iam';
+import * as logs from '@aws-cdk/aws-logs';
+import * as r53 from '@aws-cdk/aws-route53';
+import * as secretsmanager from '@aws-cdk/aws-secretsmanager';
+import {ApplicationProtocol} from "@aws-cdk/aws-elasticloadbalancingv2";
 
-class CdkGrafanaStack extends cdk.Stack {
-  /**
-   *
-   * @param {cdk.Construct} scope
-   * @param {string} id
-   * @param {cdk.StackProps=} props
-   */
-  constructor(scope, id, props) {
+export class CdkGrafanaStack extends cdk.Stack {
+  constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     // Get Context Values
     const domainName = this.node.tryGetContext('domainName');
     const hostedZoneId = this.node.tryGetContext('hostedZoneId');
     const zoneName = this.node.tryGetContext('zoneName');
-    const enablePrivateLink = this.node.tryGetContext('enablePrivateLink');
 
+    if (!domainName || !hostedZoneId || !zoneName) {
+      throw new Error('Please provide required parameters domainName, hostedZoneId, zoneName via context variables');
+    }
+
+    const enablePrivateLink = this.node.tryGetContext('enablePrivateLink');
+    const domainZone = r53.PublicHostedZone.fromHostedZoneAttributes( this, "MyHostedZone", {
+      hostedZoneId: hostedZoneId,
+      zoneName: zoneName
+    });
     // vpc
     const vpc = new ec2.Vpc(this, "MyVpc", {
       maxAzs: 2 // Default is all AZs in region
@@ -35,14 +38,13 @@ class CdkGrafanaStack extends cdk.Stack {
       vpc.addInterfaceEndpoint('SMEndpoint',  {service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER});
     }
 
-    // ecs cluster
     const cluster = new ecs.Cluster(this, "MyCluster", {
       vpc: vpc
     });
 
     // EFS
     const fileSystem = new efs.FileSystem(this, 'EfsFileSystem', {
-      vpc,
+      vpc: vpc,
       encrypted: true,
       lifecyclePolicy: efs.LifecyclePolicy.AFTER_14_DAYS,
       performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
@@ -113,33 +115,23 @@ class CdkGrafanaStack extends cdk.Stack {
     }));
 
     // Create Task Definition - # EFS integration currently uses escape hatches until native CDK support is added #
-    const volumeName = 'efsGrafanaVolume'
+    const volumeName = 'efsGrafanaVolume';
+
+    const volumeConfig: ecs.Volume = {
+      name: volumeName,
+      efsVolumeConfiguration: {
+        fileSystemId: fileSystem.fileSystemId,
+        transitEncryption: 'ENABLED',
+        authorizationConfig: { accessPointId: accessPoint.accessPointId}
+      },
+    };
+
     // https://aws.amazon.com/blogs/aws/amazon-ecs-supports-efs/
     const task_definition = new ecs.FargateTaskDefinition(this, "TaskDef",{
       taskRole: taskRole,
       executionRole: executionRole,
-      volumes:[
-        {
-          name: volumeName
-        }
-      ]
+      volumes: [volumeConfig]
     });
-
-    // Extract low level CfnResource - you can find the 'path' to the Cfn Resource in the metadata of the resource in the generated Cfn
-    const task_definition_volumes = task_definition.node.defaultChild
-    // Override Settings in task_definition_volumes - Add the EFS configuration
-    task_definition_volumes.addPropertyOverride(
-      'Volumes',[{
-        Name: volumeName,
-        EFSVolumeConfiguration: {
-          FilesystemId: fileSystem.fileSystemId,
-          TransitEncryption: 'ENABLED',
-          AuthorizationConfig: {
-            AccessPointId: accessPoint.accessPointId
-          }
-        }
-      }]
-    )
 
     // Grafana Admin Password
     const grafanaAdminPassword = new secretsmanager.Secret(this, 'grafanaAdminPassword');
@@ -148,56 +140,46 @@ class CdkGrafanaStack extends cdk.Stack {
 
     // Web Container
     const container_web = task_definition.addContainer("web", {
-        image: ecs.ContainerImage.fromRegistry('grafana/grafana'),
-        logging: containerLogDriver,
-        secrets: {
-          GF_SECURITY_ADMIN_PASSWORD: ecs.Secret.fromSecretsManager(grafanaAdminPassword)
+          image: ecs.ContainerImage.fromRegistry('grafana/grafana'),
+          logging: containerLogDriver,
+          secrets: {
+            GF_SECURITY_ADMIN_PASSWORD: ecs.Secret.fromSecretsManager(grafanaAdminPassword)
+          },
+          environment: {
+            'GF_SERVER_ROOT_URL' : `https://${domainZone.zoneName}`,
+          }
+
         }
-      }
     );
     // set port mapping
     container_web.addPortMappings({
       containerPort: 3000
     });
     container_web.addMountPoints({
-      sourceVolume: volumeName,
+      sourceVolume: volumeConfig.name,
       containerPath: '/var/lib/grafana',
       readOnly: false
-    })
+    });
 
     // Create a load-balanced Fargate service and make it public
     const fargateService = new ecs_patterns.ApplicationLoadBalancedFargateService(this, "MyFargateService", {
-      domainName: domainName,
-      domainZone: {
-        hostedZoneId: hostedZoneId, 
-        zoneName: zoneName
-      },
+      domainName: domainZone.zoneName,
+      domainZone: domainZone,
       cluster: cluster, // Required
       cpu: 1024, // https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html
       desiredCount: 1, // Should be set to 1 to prevent multiple tasks attempting to write to EFS volume concurrently
       taskDefinition: task_definition,
       memoryLimitMiB: 2048, // https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html
-      protocol: "HTTPS",
-      publicLoadBalancer: true, // Default is false
-      platformVersion: ecs.FargatePlatformVersion.VERSION1_4 // LATEST should work too
+      protocol: ApplicationProtocol.HTTPS,
+      platformVersion: ecs.FargatePlatformVersion.VERSION1_4
     });
 
-    // Extract low level CfnResource - you can find the 'path' to the Cfn Resource in the metadata of the resource in the generated Cfn
-    const applicationTargetGroup = fargateService.loadBalancer.node.findChild('PublicListener').node.findChild('ECSGroup').node.defaultChild
-    // Override Settings in CfnResource - Set the allowed response code
-    applicationTargetGroup.addPropertyOverride('Matcher',{"HttpCode" : "200,302"})
+    fargateService.targetGroup.configureHealthCheck({
+      path: '/api/health'
+    });
 
     // Allow Task to access EFS
     fileSystem.connections.allowDefaultPortFrom(fargateService.service.connections);
 
-    // Outputs
-    // new CfnOutput(this, "url" , {
-    //   value: ('http://' + fargateService.loadBalancer.loadBalancerDnsName)
-    // });
   }
 }
-
-module.exports = { CdkGrafanaStack }
-
-// https://grafana.com/docs/grafana/latest/installation/configure-docker/
-// https://github.com/monitoringartist/grafana-aws-cloudwatch-dashboards
